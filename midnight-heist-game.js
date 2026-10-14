@@ -36,6 +36,7 @@
     cardStatus: document.getElementById('card-status'),
     intelStatus: document.getElementById('intel-status'),
     terminalStatus: document.getElementById('terminal-status'),
+    soundToggle: document.getElementById('sound-toggle'),
     stage: document.querySelector('.stage'),
     levelButtons: [...document.querySelectorAll('[data-level]')]
   };
@@ -215,20 +216,91 @@
   let smokeCharges = 2;
   let smokeUntil = 0;
   let audio;
+  let audioMaster;
+  let noiseBuffer;
+  let nextMusicBeat = 0;
+  let musicStep = 0;
+  let nextFootstep = 0;
+  let exitChimePlayed = false;
+  let soundEnabled = true;
+  try { soundEnabled = window.localStorage.getItem('midnight-heist-sound') !== 'off'; } catch (_) { /* Sound still works without storage. */ }
 
-  function tone(freq, duration, wave = 'sine', volume = 0.07) {
+  function ensureAudio() {
+    if (!soundEnabled) return false;
     try {
-      audio ||= new (window.AudioContext || window.webkitAudioContext)();
+      if (!audio) {
+        audio = new (window.AudioContext || window.webkitAudioContext)();
+        audioMaster = audio.createGain();
+        audioMaster.gain.value = 0.62;
+        audioMaster.connect(audio.destination);
+      }
+      if (audio.state === 'suspended') audio.resume().catch(() => {});
+      return true;
+    } catch (_) { return false; }
+  }
+
+  function tone(freq, duration, wave = 'sine', volume = 0.07, delay = 0) {
+    if (!ensureAudio()) return;
+    try {
+      const start = audio.currentTime + delay;
       const oscillator = audio.createOscillator();
       const gain = audio.createGain();
       oscillator.type = wave;
-      oscillator.frequency.setValueAtTime(freq, audio.currentTime);
-      gain.gain.setValueAtTime(volume, audio.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, audio.currentTime + duration);
-      oscillator.connect(gain).connect(audio.destination);
-      oscillator.start();
-      oscillator.stop(audio.currentTime + duration);
-    } catch (_) { /* Muted browsers still play the game. */ }
+      oscillator.frequency.setValueAtTime(freq, start);
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.linearRampToValueAtTime(volume, start + Math.min(0.015, duration / 3));
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
+      oscillator.connect(gain).connect(audioMaster);
+      oscillator.start(start);
+      oscillator.stop(start + duration + 0.01);
+    } catch (_) { /* Sound is optional. */ }
+  }
+
+  function noise(duration, volume = 0.035, cutoff = 900) {
+    if (!ensureAudio()) return;
+    try {
+      if (!noiseBuffer) {
+        noiseBuffer = audio.createBuffer(1, audio.sampleRate, audio.sampleRate);
+        const data = noiseBuffer.getChannelData(0);
+        for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+      }
+      const source = audio.createBufferSource();
+      const filter = audio.createBiquadFilter();
+      const gain = audio.createGain();
+      const start = audio.currentTime;
+      source.buffer = noiseBuffer;
+      filter.type = 'lowpass';
+      filter.frequency.value = cutoff;
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.linearRampToValueAtTime(volume, start + Math.min(0.02, duration / 3));
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
+      source.connect(filter).connect(gain).connect(audioMaster);
+      source.start(start);
+      source.stop(start + duration + 0.01);
+    } catch (_) { /* Sound is optional. */ }
+  }
+
+  function updateSound() {
+    if (!soundEnabled || !audio || audio.state !== 'running') return;
+    if (levelTime >= nextMusicBeat) {
+      const bass = [110, 110, 98, 98, 130.81, 130.81, 98, 98];
+      if (musicStep % 4 === 0) tone(bass[Math.floor(musicStep / 2) % bass.length], 0.58, 'triangle', 0.019);
+      if (musicStep % 2 === 0) tone([329.63, 392, 293.66, 261.63][Math.floor(musicStep / 2) % 4], 0.18, 'sine', 0.010);
+      if (musicStep % 4 === 2) noise(0.045, 0.012, 1300);
+      if (seenNow && musicStep % 2 === 0) tone(523.25, 0.09, 'square', 0.012);
+      musicStep++;
+      nextMusicBeat = levelTime + 0.43;
+    }
+    if (player.moving && levelTime >= nextFootstep) {
+      noise(0.055, 0.012, 450);
+      nextFootstep = levelTime + 0.23;
+    }
+  }
+
+  function syncSoundButton() {
+    ui.soundToggle.setAttribute('aria-pressed', String(soundEnabled));
+    ui.soundToggle.setAttribute('aria-label', soundEnabled ? 'Mute game sound' : 'Turn on game sound');
+    ui.soundToggle.textContent = soundEnabled ? '◖)) SOUND ON' : '◖× SOUND OFF';
   }
 
   function burst(x, y, color, count = 30) {
@@ -325,6 +397,10 @@
     seenNow = false;
     levelTime = 0;
     visualTime = 0;
+    nextMusicBeat = 0;
+    musicStep = 0;
+    nextFootstep = 0;
+    exitChimePlayed = false;
     particles = [];
     floaters = [];
     trail = [];
@@ -362,6 +438,7 @@
       state = 'playing';
       ui.overlay.hidden = true;
       canvas.focus();
+      ensureAudio();
       tone(330, 0.08);
       setTimeout(() => tone(440, 0.13), 85);
     } else {
@@ -397,7 +474,7 @@
           : `${collectedCount()} diamond${collectedCount() === 1 ? '' : 's'} secured${intel?.collected ? ' with bonus intel' : ''} and ${Math.ceil(timer)} seconds left. The next patrols are faster.`,
         final ? 'Play campaign again →' : `Enter level 0${levelIndex + 2} →`, '✦');
       burst(player.x, player.y, '#83f7df', 70);
-      tone(523, 0.18); setTimeout(() => tone(659, 0.2), 120); setTimeout(() => tone(784, 0.3), 250);
+      tone(523, 0.18); tone(659, 0.2, 'sine', 0.07, 0.12); tone(784, 0.38, 'triangle', 0.08, 0.25);
     } else {
       showModal('Mission failed · Level 0' + (levelIndex + 1),
         alarm >= 100 ? 'Security found you.' : 'The clock ran out.',
@@ -405,6 +482,7 @@
         'Retry this level →', '!');
       burst(player.x, player.y, '#ff7186', 46);
       tone(145, 0.42, 'sawtooth', 0.045);
+      noise(0.32, 0.05, 680);
     }
     syncHud();
   }
@@ -420,6 +498,12 @@
     prepareLevel(levelIndex, false);
   }));
   ui.smokeButton.addEventListener('click', useSmoke);
+  ui.soundToggle.addEventListener('click', () => {
+    soundEnabled = !soundEnabled;
+    try { window.localStorage.setItem('midnight-heist-sound', soundEnabled ? 'on' : 'off'); } catch (_) { /* Optional preference. */ }
+    if (soundEnabled) { ensureAudio(); tone(660, 0.12, 'sine', 0.045); }
+    syncSoundButton();
+  });
   canvas.addEventListener('click', () => { if (state === 'ready') prepareLevel(levelIndex, true); });
   document.addEventListener('keydown', event => {
     const key = event.key.toLowerCase();
@@ -455,6 +539,7 @@
     burst(player.x, player.y, '#a9eaff', 55);
     floaters.push({ x: player.x, y: player.y - 28, text: 'SMOKE DEPLOYED', life: 1.15 });
     tone(210, 0.22, 'triangle', 0.038);
+    noise(0.55, 0.075, 1800);
     syncHud();
   }
 
@@ -466,6 +551,7 @@
     burst(terminal.x, terminal.y, '#8feeff', 44);
     floaters.push({ x: terminal.x, y: terminal.y - 29, text: 'SECURITY OFFLINE · 8 SEC', life: 1.5 });
     tone(480, 0.14, 'triangle'); setTimeout(() => tone(710, 0.2, 'triangle'), 110);
+    tone(960, 0.22, 'sine', 0.04, 0.23);
     syncHud();
   }
 
@@ -556,6 +642,8 @@
       if (Math.random() < 0.62) trail.push({ x: player.x, y: player.y, life: 0.46 });
     }
 
+    updateSound();
+
     for (const guard of guards) moveGuard(guard, dt, level);
     for (const camera of cameras) camera.radar = cameraRadar(camera);
     const seen = guards.some(canSee) || cameras.some(canSee) || lasers.some(touchingLaser);
@@ -585,6 +673,11 @@
       burst(intel.x, intel.y, '#aaf3b6', 32);
       floaters.push({ x: intel.x, y: intel.y - 30, text: 'INTEL FOUND · +10 SEC', life: 1.3 });
       tone(610, 0.12); setTimeout(() => tone(850, 0.18), 90);
+    }
+    if (!exitChimePlayed && exitUnlocked()) {
+      exitChimePlayed = true;
+      tone(587.33, 0.14, 'sine', 0.05);
+      tone(880, 0.28, 'triangle', 0.045, 0.12);
     }
     if (exitUnlocked() && Math.hypot(player.x - exit.x, player.y - exit.y) < 36) {
       finish(true); return;
@@ -990,5 +1083,6 @@
   }
 
   prepareLevel(0, false);
+  syncSoundButton();
   requestAnimationFrame(loop);
 })();
