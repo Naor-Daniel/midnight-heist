@@ -8,4 +8,6 @@ Use the arrow keys or WASD to move. Collect every diamond and, where required, t
 
 Choose Rookie, Agent, or Legend to set how long you can remain in radar before capture: 1.5, 0.8, or 0.4 seconds respectively. Guards also get faster and the clock shorter as difficulty rises.
 
+The soundtrack and effects are generated in the browser with Web Audio. Use **SOUND ON/OFF** at the top of the page to mute or unmute them.
+
 Open `index.html` directly, or publish the repository root with GitHub Pages.
